@@ -3,6 +3,7 @@
 - 재인코딩 없이 -c:v copy 로 저장 (CPU 거의 안 씀, 화질 보존, 화면 타임스탬프 그대로)
 - 파일명은 녹화 시작 시각(14자리) → _run_single.py 가 이 시각을 기준시각으로 인식
 """
+import os
 import sys
 import subprocess
 from pathlib import Path
@@ -25,7 +26,7 @@ def record(rtsp: dict) -> Optional[Path]:
     """RTSP를 record_seconds 만큼 녹화. 성공 시 저장 경로, 실패 시 None."""
     url = build_url(rtsp)
     duration = int(rtsp.get("record_seconds", 600))
-    out_dir = Path(rtsp.get("output_dir", "recordings"))
+    out_dir = Path(os.path.expandvars(rtsp.get("output_dir", "recordings")))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     start = datetime.now()

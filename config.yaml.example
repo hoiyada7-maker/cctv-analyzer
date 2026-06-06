@@ -30,9 +30,9 @@ rtsp:
   port: 554
   username: "admin"          # VIGI 앱에서 설정한 RTSP/장치 계정
   password: "여기에_RTSP_비밀번호_입력"
-  stream: "stream1"          # stream1=고화질, stream2=저화질(저사양 기기용)
-  record_seconds: 600        # 녹화 길이 (초). 600 = 10분
-  output_dir: "recordings"
+  stream: "stream2"          # stream1=고화질, stream2=저화질(권장: 모션감지 부하 ↓)
+  record_seconds: 12000      # 녹화 길이 (초). 12000 = 3시간 20분
+  output_dir: '%USERPROFILE%\Videos'   # 환경변수 확장됨. Linux면 "recordings" 등으로
 
 # ----- 카메라 설정 -----
 # 카메라마다 영상이 저장되는 폴더와 파일명 패턴
