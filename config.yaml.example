@@ -1,0 +1,103 @@
+# ============================================
+# CCTV Analyzer 설정 파일 (비용 최적화 버전)
+# ============================================
+
+# ----- Gemini API -----
+gemini:
+  # https://aistudio.google.com 에서 발급
+  api_key: "여기에_GEMINI_API_KEY_입력"
+
+  # 1차 분석 모델 (저렴, 빠름)
+  # Flash-Lite: $0.10/M 입력, $0.40/M 출력
+  primary_model: "models/gemini-2.5-flash-lite"
+
+  # 폴백 모델 (Flash-Lite가 모호하다고 한 경우만 사용)
+  # Flash: $0.30/M 입력, $2.50/M 출력
+  fallback_model: "models/gemini-2.5-flash"
+
+  # 모호한 결과(confidence=low)일 때 강한 모델로 재분석
+  # false로 두면 비용은 줄지만 정확도가 약간 떨어짐
+  use_fallback: true
+
+  # Gemini가 영상에서 초당 샘플링할 프레임 수
+  # CCTV는 정적이라 0.5 (2초당 1프레임) 권장
+  # 토큰을 1/2로 절감하면서 정확도는 거의 동일
+  analysis_fps: 0.5
+
+# ----- RTSP 실시간 녹화 -----
+rtsp:
+  host: "192.168.0.100"      # 카메라 IP (공유기에서 고정 IP 권장)
+  port: 554
+  username: "admin"          # VIGI 앱에서 설정한 RTSP/장치 계정
+  password: "여기에_RTSP_비밀번호_입력"
+  stream: "stream1"          # stream1=고화질, stream2=저화질(저사양 기기용)
+  record_seconds: 600        # 녹화 길이 (초). 600 = 10분
+  output_dir: "recordings"
+
+# ----- 카메라 설정 -----
+# 카메라마다 영상이 저장되는 폴더와 파일명 패턴
+# 파일 패턴에서 %Y, %m, %d는 어제 날짜로 치환됨 (strftime)
+cameras:
+  - name: "거실"
+    path: "/mnt/cctv/livingroom"
+    # 예: /mnt/cctv/livingroom/2026-05-10/14-00-00.mp4
+    file_patterns:
+      - "%Y-%m-%d/*.mp4"
+      - "%Y%m%d/*.mp4"
+
+  - name: "현관"
+    path: "/mnt/cctv/entrance"
+    # 예: /mnt/cctv/entrance/2026-05-10_14-00-00.mp4
+    file_patterns:
+      - "%Y-%m-%d*.mp4"
+      - "%Y%m%d*.mp4"
+
+# ----- 움직임 감지 옵션 -----
+motion:
+  # 화면의 몇 %가 변해야 움직임으로 인정? (0.005 = 0.5%)
+  # 작게 잡으면 잎사귀 흔들림까지 잡힘, 크게 잡으면 작은 동물 놓침
+  # 가정용 권장: 0.005 ~ 0.01
+  min_area_ratio: 0.005
+
+  # 최소 지속 시간 (초). 이 미만은 노이즈로 간주.
+  min_duration: 2.0
+
+  # 단일 영상 내에서 N초 이내 움직임은 같은 사건으로 묶음
+  merge_gap: 10.0
+
+  # 영상 파일 경계를 넘는 움직임도 합칠지 (초)
+  # 예: 14:59:50에 시작해서 15:00:10에 끝난 사건 → 1번만 분석
+  merge_across_files_gap: 15.0
+
+  # 움직임 감지 시 영상을 초당 몇 프레임 분석할지
+  # 높을수록 정확하지만 CPU 부하 증가
+  sample_fps: 2.0
+
+# ----- 분석 옵션 -----
+analysis:
+  # 클립 최대 길이 (초). 너무 긴 사건은 잘라서 토큰 절약.
+  # 5분이면 사건 파악에 충분
+  max_clip_duration_sec: 300
+
+  # 분석 결과 중복 제거 시간 윈도우 (초)
+  # 같은 카메라 + 같은 카테고리 + 비슷한 설명이 90초 이내면 중복
+  dedup_window_sec: 90.0
+
+# ----- 텔레그램 알림 -----
+telegram:
+  enabled: true
+  # @BotFather 에서 봇 생성 후 받은 토큰
+  bot_token: "여기에_BOT_TOKEN_입력"
+  # 봇과 한 번 대화 후
+  # https://api.telegram.org/bot<TOKEN>/getUpdates 에서 chat.id 확인
+  chat_id: "여기에_CHAT_ID_입력"
+
+# ----- 이메일 알림 (선택) -----
+email:
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 465
+  smtp_user: "your@gmail.com"
+  smtp_password: "앱_비밀번호"  # Gmail은 2단계 인증 후 앱 비밀번호 발급
+  from: "your@gmail.com"
+  to: "your@gmail.com"

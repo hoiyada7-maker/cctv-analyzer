@@ -1,0 +1,17 @@
+# ===== 비밀 정보 (절대 커밋 금지) =====
+config.yaml
+
+# ===== 개인정보: CCTV 영상 / 분석 결과 =====
+*.mp4
+recordings/
+reports/
+clip/
+work/
+logs/
+
+# ===== 파이썬 =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
