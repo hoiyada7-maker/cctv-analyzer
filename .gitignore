@@ -8,6 +8,7 @@ reports/
 clip/
 work/
 logs/
+.docs/
 
 # ===== 파이썬 =====
 __pycache__/

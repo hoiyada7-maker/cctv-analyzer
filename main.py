@@ -129,6 +129,8 @@ def main() -> int:
                 abs_t = base_time + timedelta(seconds=seg.start_sec)
             all_events.append({
                 "time_str": abs_t.strftime("%H:%M:%S"),
+                "clip_start": ts_start[:5],
+                "clip_end": ts_end[:5],
                 "category": ev.get("category", "기타"),
                 "description": ev.get("description", ""),
                 "_abs": abs_t,
@@ -156,24 +158,43 @@ def main() -> int:
             item["description"] += f" (외 {dup}건)"
         deduped.append(item)
 
-    # ===== 6. 일일 요약 =====
+    # ===== 6. 시간별 요약 (Gemini) =====
     events_text = "\n".join(
         f"- {e['time_str']} [{e['category']}]: {e['description']}" for e in deduped
     )
     daily_summary = gemini.generate_daily_summary(date_str, events_text)
 
     # ===== 7. 리포트 조립 =====
-    lines = ["클립별 요약\n"]
-    for idx, ts_start, ts_end, summary in clip_results:
-        lines.append(f"{idx:<4} │ {ts_start}~{ts_end} │ {summary}")
-    cost = gemini.get_cost_estimate()
-    report = (
-        "\n".join(lines)
-        + "\n\n" + daily_summary
-        + f"\n\n💰 분석 비용: 약 {cost['estimated_cost_krw']}원 "
-        + f"(API {cost['api_calls']}회, 폴백 {cost['fallback_calls']}회)"
+    header = f"📹 CCTV 분석 결과 ({date_str})\n\n"
+
+    # 메시지 1: 클립별 요약
+    clip_lines = ["클립별 요약\n"]
+    for idx, ts_s, ts_e, summ in clip_results:
+        clip_lines.append(f"{idx:<4} │ {ts_s}~{ts_e} │ {summ}")
+    msg1 = header + "\n".join(clip_lines)
+
+    # 종합: 로컬 계산 — 카테고리별 발생 시간 목록
+    cat_times: dict = {}
+    for ev in deduped:
+        cat_times.setdefault(ev["category"], []).append(
+            f"{ev['clip_start']}~{ev['clip_end']}"
+        )
+    category_summary = "\n".join(
+        f"{cat}: {', '.join(times)}" for cat, times in cat_times.items()
     )
 
+    # 메시지 2: 시간별 요약 + 종합 + 비용
+    cost = gemini.get_cost_estimate()
+    cost_line = (
+        f"\n\n💰 분석 비용: 약 {cost['estimated_cost_krw']}원 "
+        f"(API {cost['api_calls']}회, 폴백 {cost['fallback_calls']}회)"
+    )
+    msg2 = daily_summary
+    if category_summary:
+        msg2 += "\n\n📋 종합\n" + category_summary
+    msg2 += cost_line
+
+    report = msg1 + "\n\n" + msg2
     print("\n" + "=" * 60 + "\n" + report)
 
     # 리포트 저장
@@ -182,10 +203,11 @@ def main() -> int:
     (reports_dir / f"report_{datetime.now():%Y%m%d_%H%M%S}.txt").write_text(
         report, encoding="utf-8")
 
-    # ===== 8. 텔레그램 전송 =====
-    header = f"📹 CCTV 분석 결과 ({date_str})\n\n"
-    if telegram_notifier.send(tg, header + report):
-        print("\n📱 텔레그램 전송 완료")
+    # ===== 8. 텔레그램 전송 (2건) =====
+    ok1 = telegram_notifier.send(tg, msg1)
+    ok2 = telegram_notifier.send(tg, msg2)
+    if ok1 and ok2:
+        print("\n📱 텔레그램 전송 완료 (2건)")
 
     return 0
 
