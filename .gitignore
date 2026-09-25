@@ -9,6 +9,7 @@ clip/
 work/
 logs/
 .docs/
+.temp/
 
 # ===== 파이썬 =====
 __pycache__/

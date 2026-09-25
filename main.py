@@ -9,6 +9,7 @@
 import os
 import re
 import sys
+import random
 import shutil
 import logging
 from pathlib import Path
@@ -114,6 +115,62 @@ def clock(base: datetime, offset_sec: float) -> str:
     return (base + timedelta(seconds=offset_sec)).strftime("%H:%M:%S")
 
 
+def make_batches(items, size_min, size_max, max_sec, dur, rng=random):
+    """items를 size_min~size_max(개수, 묶음마다 무작위)·max_sec(길이 합) 상한에 맞춰 묶음으로 분할.
+
+    dur(item) -> 초 단위 길이를 반환하는 함수.
+    길이가 max_sec를 넘는 단일 항목은 그 자체로 단독 묶음이 된다.
+    """
+    batches = []
+    cur, cur_sec, limit = [], 0.0, rng.randint(size_min, size_max)
+    for item in items:
+        d = dur(item)
+        if cur and (len(cur) >= limit or cur_sec + d > max_sec):
+            batches.append(cur)
+            cur, cur_sec, limit = [], 0.0, rng.randint(size_min, size_max)
+        cur.append(item)
+        cur_sec += d
+    if cur:
+        batches.append(cur)
+    return batches
+
+
+def failure_message(date_str, failed_batches, total_batches, last_error):
+    """모든 묶음이 실패했을 때 보낼 텔레그램 메시지. 그 외에는 None."""
+    if not total_batches or len(failed_batches) != total_batches:
+        return None
+    total_clips = sum(size for _, size, _, _, _ in failed_batches)
+    return (
+        f"⚠️ CCTV 분석 비정상 종료 ({date_str})\n"
+        f"종료코드: 1\n"
+        f"단계: Gemini 분석\n"
+        f"오류: {last_error}\n"
+        f"실패 묶음: {len(failed_batches)}개 (클립 {total_clips}개)"
+    )
+
+
+def partial_failure_lines(failed_batches):
+    """일부 묶음만 실패했을 때 msg2에 덧붙일 섹션. 실패 없으면 빈 문자열."""
+    if not failed_batches:
+        return ""
+    lines = [
+        f"묶음 {bi}: {size}개 (클립 {a}~{b}) — {err}"
+        for bi, size, a, b, err in failed_batches
+    ]
+    return "\n\n⚠️ 분석 실패 묶음\n" + "\n".join(lines)
+
+
+def notify_crash(e: Exception) -> None:
+    """예기치 못한 예외를 텔레그램으로 알림 (전송 실패해도 조용히 무시)."""
+    logging.exception("예기치 못한 예외로 종료")
+    try:
+        cfg = yaml.safe_load((BASE / "config.yaml").read_text(encoding="utf-8"))
+        msg = f"⚠️ CCTV 분석 비정상 종료\n종료코드: 1\n오류: {type(e).__name__}: {e}"[:500]
+        telegram_notifier.send(cfg["telegram"], msg)
+    except Exception:
+        logging.exception("크래시 알림 전송 실패")
+
+
 def main() -> int:
     if not acquire_lock():
         return 2
@@ -190,8 +247,9 @@ def main() -> int:
             api_timeout_sec=g.get("api_timeout_sec", 300),
         )
 
+        # ----- 3a. 클립 추출 (전체 먼저) -----
         clip_results = []
-        all_events   = []
+        extracted = []  # (idx, seg, ts_start, ts_end, clip_path)
         for idx, seg in enumerate(merged, 1):
             ts_start = clock(base_time, seg.start_sec)
             ts_end   = clock(base_time, seg.end_sec)
@@ -203,47 +261,87 @@ def main() -> int:
                 log_ai.error(f"  ffmpeg 추출 실패: {clip_path}")
                 clip_results.append((idx, ts_start, ts_end, "(ffmpeg 실패)"))
                 continue
+            extracted.append((idx, seg, ts_start, ts_end, clip_path))
 
-            result = gemini.analyze_clip(clip_path)
+        # ----- 3b. 묶음 분할 (개수/길이 상한) -----
+        batch_size_min = g.get("batch_size_min", 5)
+        batch_size_max = g.get("batch_size_max", 10)
+        batch_max_sec  = g.get("batch_max_sec", 900)
+        batches = make_batches(extracted, batch_size_min, batch_size_max, batch_max_sec,
+                                lambda e: e[1].duration)
 
-            # 분석 완료 후 clip_dir로 이동 (삭제하지 않음)
-            ts_s = ts_start.replace(":", "")
-            ts_e = ts_end.replace(":", "")
-            clip_save_name = f"{base_time.strftime('%Y%m%d')}_{ts_s}_{ts_e}.mp4"
-            clip_dest = clip_dir / clip_save_name
-            try:
-                if not clip_dest.exists():
-                    shutil.move(clip_path, str(clip_dest))
-                else:
-                    Path(clip_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        # ----- 3c. 묶음 단위 분석 -----
+        all_events = []
+        failed_batches = []  # (bi, size, a_idx, b_idx, err)
+        for bi, batch in enumerate(batches, 1):
+            a_idx, b_idx = batch[0][0], batch[-1][0]
+            total_sec = sum(e[1].duration for e in batch)
+            tag = f"묶음 {bi}/{len(batches)} · {len(batch)}개 · 총 {total_sec:.0f}초"
+            log_ai.info(f"묶음 [{bi}/{len(batches)}] 클립 {a_idx}~{b_idx} (총 {total_sec:.0f}초)")
 
-            if not result:
-                log_ai.warning("  Gemini 분석 실패")
-                clip_results.append((idx, ts_start, ts_end, "(분석 실패)"))
-                continue
+            clips_arg = [
+                (idx, clip_path, f"클립 {idx} ({ts_start}~{ts_end})")
+                for idx, seg, ts_start, ts_end, clip_path in batch
+            ]
+            batch_result = gemini.analyze_clips(clips_arg, tag=tag)
+            if not batch_result:
+                log_ai.error(
+                    f"묶음 [{bi}/{len(batches)}] 실패 — {len(batch)}개 묶음 "
+                    f"(클립 {a_idx}~{b_idx}, 총 {total_sec:.0f}초)"
+                )
+                failed_batches.append((bi, len(batch), a_idx, b_idx, gemini.last_error))
 
-            summary_text = result.get("summary", "")
-            log_ai.info(f"  {result.get('confidence')} / {summary_text}")
-            clip_results.append((idx, ts_start, ts_end, summary_text))
-
-            if not result.get("has_meaningful_event"):
-                continue
-            for ev in result.get("events", []):
+            for idx, seg, ts_start, ts_end, clip_path in batch:
+                # 분석 완료 후 clip_dir로 이동 (삭제하지 않음)
+                ts_s = ts_start.replace(":", "")
+                ts_e = ts_end.replace(":", "")
+                clip_save_name = f"{base_time.strftime('%Y%m%d')}_{ts_s}_{ts_e}.mp4"
+                clip_dest = clip_dir / clip_save_name
                 try:
-                    mm, ss = map(int, ev["time"].split(":"))
-                    abs_t = base_time + timedelta(seconds=seg.start_sec) + timedelta(minutes=mm, seconds=ss)
+                    if not clip_dest.exists():
+                        shutil.move(clip_path, str(clip_dest))
+                    else:
+                        Path(clip_path).unlink(missing_ok=True)
                 except Exception:
-                    abs_t = base_time + timedelta(seconds=seg.start_sec)
-                all_events.append({
-                    "time_str":    abs_t.strftime("%H:%M:%S"),
-                    "clip_start":  ts_start[:5],
-                    "clip_end":    ts_end[:5],
-                    "category":    ev.get("category", "기타"),
-                    "description": ev.get("description", ""),
-                    "_abs":        abs_t,
-                })
+                    pass
+
+                result = batch_result.get(idx)
+                if not result:
+                    log_ai.warning(
+                        f"  클립 [{idx}] Gemini 분석 실패 "
+                        f"(묶음 {bi}/{len(batches)}, {len(batch)}개)"
+                    )
+                    clip_results.append((idx, ts_start, ts_end, "(분석 실패)"))
+                    continue
+
+                summary_text = result.get("summary", "")
+                log_ai.info(f"  클립 [{idx}] {result.get('confidence')} / {summary_text}")
+                clip_results.append((idx, ts_start, ts_end, summary_text))
+
+                if not result.get("has_meaningful_event"):
+                    continue
+                for ev in result.get("events", []):
+                    try:
+                        mm, ss = map(int, ev["time"].split(":"))
+                        abs_t = base_time + timedelta(seconds=seg.start_sec) + timedelta(minutes=mm, seconds=ss)
+                    except Exception:
+                        abs_t = base_time + timedelta(seconds=seg.start_sec)
+                    all_events.append({
+                        "time_str":    abs_t.strftime("%H:%M:%S"),
+                        "clip_start":  ts_start[:5],
+                        "clip_end":    ts_end[:5],
+                        "category":    ev.get("category", "기타"),
+                        "description": ev.get("description", ""),
+                        "_abs":        abs_t,
+                    })
+
+        all_failed_msg = failure_message(date_str, failed_batches, len(batches), gemini.last_error)
+        if all_failed_msg:
+            log_ai.error(all_failed_msg)
+            telegram_notifier.send(tg, all_failed_msg)
+            return 1
+
+        clip_results.sort(key=lambda x: x[0])
 
         cost = gemini.get_cost_estimate()
         log_ai.info(
@@ -309,6 +407,7 @@ def main() -> int:
         if category_summary:
             msg2 += "\n\n📋 종합\n" + category_summary
         msg2 += cost_line
+        msg2 += partial_failure_lines(failed_batches)
 
         report = msg1 + "\n\n" + msg2
 
@@ -333,7 +432,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     _started   = datetime.now()
-    _exit_code = main()
+    try:
+        _exit_code = main()
+    except Exception as _e:
+        notify_crash(_e)
+        _exit_code = 1
     _ended     = datetime.now()
     _elapsed   = int((_ended - _started).total_seconds())
     _status    = "OK" if _exit_code == 0 else ("LOCK" if _exit_code == 2 else "NG")

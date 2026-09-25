@@ -9,7 +9,7 @@ gemini:
 
   # 1차 분석 모델 (저렴, 빠름)
   # Flash-Lite: $0.10/M 입력, $0.40/M 출력
-  primary_model: "models/gemini-2.5-flash-lite"
+  primary_model: "models/gemini-3.5-flash-lite"
 
   # 폴백 모델 (Flash-Lite가 모호하다고 한 경우만 사용)
   # Flash: $0.30/M 입력, $2.50/M 출력
@@ -23,6 +23,14 @@ gemini:
   # CCTV는 정적이라 0.5 (2초당 1프레임) 권장
   # 토큰을 1/2로 절감하면서 정확도는 거의 동일
   analysis_fps: 0.5
+
+  # 한 요청에 담을 클립 수 (호출 수 절감, Gemini 권장 상한 ~10)
+  # 묶음마다 5~10개 사이 무작위
+  batch_size_min: 5
+  batch_size_max: 10
+
+  # 한 요청의 클립 길이 합계 상한(초) — 무료 티어 TPM 초과 방지
+  batch_max_sec: 900
 
 # ----- RTSP 실시간 녹화 -----
 rtsp:
