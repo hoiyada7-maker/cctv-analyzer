@@ -8,6 +8,7 @@ Gemini API 클라이언트
 import json
 import time
 import logging
+import concurrent.futures
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -84,12 +85,14 @@ class GeminiClient:
         fallback_model: str = "models/gemini-2.5-flash",
         analysis_fps: float = 0.5,
         use_fallback: bool = True,
+        api_timeout_sec: int = 300,
     ):
         self.client = genai.Client(api_key=api_key)
         self.primary_model = primary_model
         self.fallback_model = fallback_model
         self.analysis_fps = analysis_fps
         self.use_fallback = use_fallback
+        self.api_timeout_sec = api_timeout_sec
 
         # 비용 추적
         self.total_input_tokens = 0
@@ -145,22 +148,30 @@ class GeminiClient:
                     log.error(f"  파일 상태 비정상: {myfile.state.name}")
                     return None
 
-                # FPS 0.5로 분석 (토큰 절감)
-                response = self.client.models.generate_content(
-                    model=model,
-                    contents=types.Content(parts=[
-                        types.Part(
-                            file_data=types.FileData(
-                                file_uri=myfile.uri,
-                                mime_type=myfile.mime_type,
-                            ),
-                            video_metadata=types.VideoMetadata(
-                                fps=self.analysis_fps
-                            ),
+                # FPS 0.5로 분석 (토큰 절감) — 타임아웃 적용
+                contents = types.Content(parts=[
+                    types.Part(
+                        file_data=types.FileData(
+                            file_uri=myfile.uri,
+                            mime_type=myfile.mime_type,
                         ),
-                        types.Part(text=CLIP_PROMPT),
-                    ]),
-                )
+                        video_metadata=types.VideoMetadata(
+                            fps=self.analysis_fps
+                        ),
+                    ),
+                    types.Part(text=CLIP_PROMPT),
+                ])
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    future = ex.submit(
+                        self.client.models.generate_content,
+                        model=model,
+                        contents=contents,
+                    )
+                    try:
+                        response = future.result(timeout=self.api_timeout_sec)
+                    except concurrent.futures.TimeoutError:
+                        log.error(f"  API 응답 시간 초과 ({self.api_timeout_sec}초) — 건너뜀")
+                        return None
 
                 # 토큰 사용량 기록
                 if response.usage_metadata:

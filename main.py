@@ -9,6 +9,7 @@
 import os
 import re
 import sys
+import shutil
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -128,17 +129,23 @@ def main() -> int:
 
         # ===== 1. 녹화 =====
         log_rec.info("녹화 시작")
-        video = record(cfg["rtsp"])
+        video, rec_warnings = record(cfg["rtsp"])
         if not video:
             log_rec.error("녹화 실패 — 카메라 연결을 확인하세요")
             telegram_notifier.send(tg, "⚠️ CCTV 녹화 실패 — 카메라 연결을 확인하세요.")
             return 1
         log_rec.info(f"녹화 완료: {video.name}  ({video.stat().st_size // 1024 // 1024} MB)")
+        if rec_warnings:
+            warn_text = "⚠️ CCTV 녹화 중 RTSP 끊김 발생\n" + "\n".join(rec_warnings)
+            log_rec.warning(warn_text)
+            telegram_notifier.send(tg, warn_text)
 
         base_time = parse_base_time(video.name)
         date_str  = base_time.strftime("%Y-%m-%d")
         work_dir  = BASE / "work" / "single"
         work_dir.mkdir(parents=True, exist_ok=True)
+        clip_dir  = Path(os.path.expandvars(cfg["rtsp"]["output_dir"])) / "clip"
+        clip_dir.mkdir(parents=True, exist_ok=True)
 
         # ===== 2. 움직임 감지 =====
         log_mot.info("움직임 감지 시작")
@@ -182,6 +189,7 @@ def main() -> int:
             fallback_model=g.get("fallback_model", "models/gemini-2.5-flash"),
             analysis_fps=g.get("analysis_fps", 0.5),
             use_fallback=g.get("use_fallback", True),
+            api_timeout_sec=g.get("api_timeout_sec", 300),
         )
 
         clip_results = []
@@ -199,8 +207,17 @@ def main() -> int:
                 continue
 
             result = gemini.analyze_clip(clip_path)
+
+            # 분석 완료 후 clip_dir로 이동 (삭제하지 않음)
+            ts_s = ts_start.replace(":", "")
+            ts_e = ts_end.replace(":", "")
+            clip_save_name = f"{base_time.strftime('%Y%m%d')}_{ts_s}_{ts_e}.mp4"
+            clip_dest = clip_dir / clip_save_name
             try:
-                Path(clip_path).unlink()
+                if not clip_dest.exists():
+                    shutil.move(clip_path, str(clip_dest))
+                else:
+                    Path(clip_path).unlink(missing_ok=True)
             except Exception:
                 pass
 
@@ -275,11 +292,14 @@ def main() -> int:
         msg1 = header + "\n".join(clip_lines)
 
         # 메시지 2: 일일 요약 + 카테고리 종합 + 비용
+        # 카테고리별 이벤트 발생 시각(HH:MM) — 10분 이내 동일 행동 제외
+        cat_last: dict = {}
         cat_times: dict = {}
         for ev in deduped:
-            cat_times.setdefault(ev["category"], []).append(
-                f"{ev['clip_start']}~{ev['clip_end']}"
-            )
+            last_abs = cat_last.get(ev["category"])
+            if last_abs is None or (ev["_abs"] - last_abs).total_seconds() >= 600:
+                cat_times.setdefault(ev["category"], []).append(ev["time_str"][:5])
+                cat_last[ev["category"]] = ev["_abs"]
         category_summary = "\n".join(
             f"{cat}: {', '.join(times)}" for cat, times in cat_times.items()
         )
