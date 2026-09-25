@@ -185,10 +185,8 @@ def main() -> int:
         g = cfg["gemini"]
         gemini = GeminiClient(
             api_key=g["api_key"],
-            primary_model=g.get("primary_model", "models/gemini-2.5-flash-lite"),
-            fallback_model=g.get("fallback_model", "models/gemini-2.5-flash"),
+            primary_model=g.get("primary_model", "models/gemini-3.5-flash-lite"),
             analysis_fps=g.get("analysis_fps", 0.5),
-            use_fallback=g.get("use_fallback", True),
             api_timeout_sec=g.get("api_timeout_sec", 300),
         )
 
@@ -250,7 +248,7 @@ def main() -> int:
         cost = gemini.get_cost_estimate()
         log_ai.info(
             f"분석 완료 — 이벤트 {len(all_events)}개 / "
-            f"API {cost['api_calls']}회 / 폴백 {cost['fallback_calls']}회 / "
+            f"API {cost['api_calls']}회 / "
             f"비용 약 {cost['estimated_cost_krw']}원"
         )
 
@@ -305,7 +303,7 @@ def main() -> int:
         )
         cost_line = (
             f"\n\n💰 분석 비용: 약 {cost['estimated_cost_krw']}원 "
-            f"(API {cost['api_calls']}회, 폴백 {cost['fallback_calls']}회)"
+            f"(API {cost['api_calls']}회)"
         )
         msg2 = daily_summary
         if category_summary:

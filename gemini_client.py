@@ -1,6 +1,6 @@
 """
 Gemini API 클라이언트
-- Flash-Lite 우선, 모호한 경우 Flash로 폴백
+- Flash-Lite로 1회 분석
 - FPS 0.5로 토큰 절약
 - File API 자동 정리
 """
@@ -73,56 +73,30 @@ DAILY_SUMMARY_PROMPT = """다음은 어제 ({date_str}) 우리 집 CCTV에서 �
 class GeminiClient:
     """
     비용 최적화 전략:
-    1. Flash-Lite로 1차 분석 (저렴)
-    2. confidence=low거나 의심스러우면 Flash로 재확인
-    3. FPS 0.5로 토큰 절감 (CCTV는 정적이라 충분)
+    1. Flash-Lite로 분석
+    2. FPS 0.5로 토큰 절감 (CCTV는 정적이라 충분)
     """
 
     def __init__(
         self,
         api_key: str,
-        primary_model: str = "models/gemini-2.5-flash-lite",
-        fallback_model: str = "models/gemini-2.5-flash",
+        primary_model: str = "models/gemini-3.5-flash-lite",
         analysis_fps: float = 0.5,
-        use_fallback: bool = True,
         api_timeout_sec: int = 300,
     ):
         self.client = genai.Client(api_key=api_key)
         self.primary_model = primary_model
-        self.fallback_model = fallback_model
         self.analysis_fps = analysis_fps
-        self.use_fallback = use_fallback
         self.api_timeout_sec = api_timeout_sec
 
         # 비용 추적
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.api_calls = 0
-        self.fallback_calls = 0
 
     def analyze_clip(self, video_path: str) -> Optional[Dict]:
-        """클립 분석. 결과가 모호하면 더 강한 모델로 재시도."""
-        # 1차: Flash-Lite
-        result = self._call_api(video_path, self.primary_model)
-        if result is None:
-            return None
-
-        # 폴백 조건: confidence가 낮고, 이벤트가 있다고 했을 때
-        # (조용한 영상은 굳이 Flash로 다시 안 돌림)
-        needs_fallback = (
-            self.use_fallback
-            and result.get("has_meaningful_event")
-            and result.get("confidence") == "low"
-        )
-
-        if needs_fallback:
-            log.info(f"  confidence=low → Flash로 재분석")
-            self.fallback_calls += 1
-            better = self._call_api(video_path, self.fallback_model)
-            if better is not None:
-                return better
-
-        return result
+        """클립 분석."""
+        return self._call_api(video_path, self.primary_model)
 
     def _call_api(
         self, video_path: str, model: str, max_retries: int = 3
@@ -235,20 +209,12 @@ class GeminiClient:
     def get_cost_estimate(self) -> Dict:
         """현재까지의 비용 추정 (USD)"""
         # Flash-Lite: $0.10/M 입력, $0.40/M 출력
-        # 비디오 분석은 대부분 Flash-Lite로 처리된다고 가정
         input_cost = self.total_input_tokens / 1_000_000 * 0.10
         output_cost = self.total_output_tokens / 1_000_000 * 0.40
-
-        # 폴백 비율 보정 (Flash는 3배 비쌈)
-        if self.api_calls > 0:
-            fallback_ratio = self.fallback_calls / self.api_calls
-            input_cost *= (1 + fallback_ratio * 2)
-            output_cost *= (1 + fallback_ratio * 5.25)
 
         total_usd = input_cost + output_cost
         return {
             "api_calls": self.api_calls,
-            "fallback_calls": self.fallback_calls,
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
             "estimated_cost_usd": round(total_usd, 4),
